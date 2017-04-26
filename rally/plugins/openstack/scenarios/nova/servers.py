@@ -25,6 +25,7 @@ from rally.plugins.openstack.wrappers import network as network_wrapper
 from rally.task import types
 from rally.task import validation
 
+from osprofiler import profiler
 
 """Scenarios for Nova servers."""
 
@@ -58,6 +59,8 @@ class BootAndListServer(utils.NovaScenario, cinder_utils.CinderScenario):
                          detailed information about all of them
         :param kwargs: Optional additional arguments for server creation
         """
+        profiler.init('SECRET_KEY')
+
         server = self._boot_server(image, flavor, **kwargs)
         msg = ("Servers isn't created")
         self.assertTrue(server, err_msg=msg)
@@ -67,6 +70,9 @@ class BootAndListServer(utils.NovaScenario, cinder_utils.CinderScenario):
                "Booted server: {}\n"
                "Pool of servers: {}").format(server, pool_list)
         self.assertIn(server, pool_list, err_msg=msg)
+
+        print("Display trace with command:\n"
+              "osprofiler trace show --html", profiler.get().get_base_id())
 
 
 @validation.required_services(consts.Service.NOVA)

@@ -117,9 +117,14 @@ class BootAndDeleteServer(utils.NovaScenario, cinder_utils.CinderScenario):
         :param force_delete: True if force_delete should be used
         :param kwargs: Optional additional arguments for server creation
         """
+        profiler.init('SECRET_KEY')
+
         server = self._boot_server(image, flavor, **kwargs)
         self.sleep_between(min_sleep, max_sleep)
         self._delete_server(server, force=force_delete)
+
+        print("=====================Display trace with command:\n"
+              "osprofiler trace show --html", profiler.get().get_base_id())
 
 
 @types.convert(image={"type": "glance_image"},

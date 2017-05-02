@@ -19,6 +19,8 @@ import random
 from rally import osclients
 from rally.task import scenario
 
+from osprofiler import profiler
+
 configure = functools.partial(scenario.configure, namespace="openstack")
 
 
@@ -53,6 +55,11 @@ class OpenStackScenario(scenario.Scenario):
 
         if clients:
             self._clients = clients
+
+        profiler.init('SECRET_KEY')
+        self.trace_id = profiler.get().get_base_id()
+        with open('/tmp/osprofiler') as osp_file:
+            osp_file.write(self.trace_id)
 
     def _choose_user(self, context):
         """Choose one user from users context

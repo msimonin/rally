@@ -58,7 +58,7 @@ class OpenStackScenario(scenario.Scenario):
 
         profiler.init('SECRET_KEY')
         self.trace_id = profiler.get().get_base_id()
-        with open('/tmp/osprofiler') as osp_file:
+        with open('/tmp/osprofiler', 'w') as osp_file:
             osp_file.write(self.trace_id)
 
     def _choose_user(self, context):

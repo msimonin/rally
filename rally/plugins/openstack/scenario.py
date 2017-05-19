@@ -16,10 +16,14 @@
 import functools
 import random
 
+from oslo_config import cfg
+from osprofiler import profiler
 from rally import osclients
 from rally.task import scenario
 
 configure = functools.partial(scenario.configure, namespace="openstack")
+
+CONF = cfg.CONF
 
 
 class OpenStackScenario(scenario.Scenario):
@@ -53,6 +57,8 @@ class OpenStackScenario(scenario.Scenario):
 
         if clients:
             self._clients = clients
+
+        self._init_profiler(context)
 
     def _choose_user(self, context):
         """Choose one user from users context
@@ -104,3 +110,19 @@ class OpenStackScenario(scenario.Scenario):
         client = getattr(self._admin_clients, client_type)
 
         return client(version) if version is not None else client()
+
+    def _init_profiler(self, context):
+        """Inits the profiler."""
+        if not CONF.enable_profiler:
+            print("PRFILER disabaled by config")
+            return
+        if context is not None and "admin" in context:
+            cred = context["admin"]["credential"]
+            profiler_hmac_key = cred.profiler_hmac_key
+            if profiler_hmac_key is not None:
+                profiler.init(profiler_hmac_key)
+                trace_id = profiler.get().get_base_id()
+                self.add_output(complete={
+                    "title": "OSProfiler Trace-ID",
+                    "chart_plugin": "TextArea",
+                    "data": [trace_id]})

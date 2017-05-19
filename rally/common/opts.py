@@ -23,6 +23,12 @@ from rally.task import engine
 
 CONF = cfg.CONF
 
+PROFILER_OPTS = [
+    cfg.BoolOpt("enable_profiler", default=True,
+                help="Enable or disable osprofiler to trace the scenarios")
+]
+CONF.register_opts(PROFILER_OPTS)
+
 
 def list_opts():
 

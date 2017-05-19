@@ -16,7 +16,7 @@
 import ddt
 import mock
 from oslotest import mockpatch
-
+from rally.plugins.openstack.credential import OpenStackCredential
 from rally.plugins.openstack import scenario as base_scenario
 from tests.unit import test
 
@@ -79,6 +79,27 @@ class OpenStackScenarioTestCase(test.TestCase):
         self.assertEqual(self.context, scenario.context)
 
         self.assertEqual("foobar", scenario._clients)
+
+    @mock.patch("rally.plugins.openstack.scenario.profiler.init")
+    def test_profiler_hmac_key(self, mock_profiler_init):
+        credential = OpenStackCredential(
+            "auth_url",
+            "username",
+            "password",
+            profiler_hmac_key="test_profiler_hmac_key")
+        self.context.update({"admin": {"credential": credential}})
+        base_scenario.OpenStackScenario(self.context)
+        self.assertEqual(1, mock_profiler_init.call_count)
+
+    @mock.patch("rally.plugins.openstack.scenario.profiler.init")
+    def test_profiler_no_hmac_key(self, mock_profiler_init):
+        credential = OpenStackCredential(
+            "auth_url",
+            "username",
+            "password")
+        self.context.update({"admin": {"credential": credential}})
+        base_scenario.OpenStackScenario(self.context)
+        self.assertEqual(0, mock_profiler_init.call_count)
 
     def test__choose_user_random(self):
         users = [{"credential": mock.Mock(), "tenant_id": "foo"}

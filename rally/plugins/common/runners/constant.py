@@ -27,7 +27,7 @@ from rally.task import runner
 from rally.task import utils as butils
 
 
-def _worker_process(queue, iteration_gen, timeout, concurrency, times,
+def _worker_process(queue, iteration_gen, timeout, concurrency, times, duration,
                     context, cls, method_name, args, event_queue, aborted,
                     info):
     """Start the scenario within threads.
@@ -52,6 +52,15 @@ def _worker_process(queue, iteration_gen, timeout, concurrency, times,
                     the flag is set
     :param info: info about all processes count and counter of launched process
     """
+    def _to_be_continued(iteration, current_duration,aborted, times=None, duration=None):
+        if times:
+            return iteration < times and not aborted.is_set()
+        elif duration:
+            return current_duration < duration and not aborted.is_set()
+        else:
+            return False
+
+    assert times is not None or duration is not None
 
     pool = collections.deque()
     alive_threads_in_pool = 0
@@ -70,7 +79,11 @@ def _worker_process(queue, iteration_gen, timeout, concurrency, times,
         collector_thr_by_timeout.start()
 
     iteration = next(iteration_gen)
-    while iteration < times and not aborted.is_set():
+    start_time = time.time()
+    current_duration = 0
+    while _to_be_continued(iteration, current_duration, aborted,
+                           times=times, duration=duration):
+
         scenario_context = runner._get_scenario_context(iteration, context)
         worker_args = (
             queue, cls, method_name, scenario_context, args, event_queue)
@@ -106,6 +119,7 @@ def _worker_process(queue, iteration_gen, timeout, concurrency, times,
             # we should wait to not create big noise with these checks
             time.sleep(0.001)
         iteration = next(iteration_gen)
+        current_duration = time.time() - start_time
 
     # Wait until all threads are done
     while pool:
@@ -217,7 +231,7 @@ class ConstantScenarioRunner(runner.ScenarioRunner):
             while True:
                 yield (result_queue, iteration_gen, timeout,
                        concurrency_per_worker + (concurrency_overhead and 1),
-                       times, context, cls, method_name, args, event_queue,
+                       times, None, context, cls, method_name, args, event_queue,
                        self.aborted)
                 if concurrency_overhead:
                     concurrency_overhead -= 1
@@ -226,18 +240,6 @@ class ConstantScenarioRunner(runner.ScenarioRunner):
             processes_to_start, _worker_process,
             worker_args_gen(concurrency_overhead))
         self._join_processes(process_pool, result_queue, event_queue)
-
-
-def _run_scenario_once_with_unpack_args(args):
-    # NOTE(andreykurilin): `pool.imap` is used in
-    #     ConstantForDurationScenarioRunner. It does not want to work with
-    #     instance-methods, class-methods and static-methods. Also, it can't
-    #     transmit positional or keyword arguments to destination function.
-    #     While original `rally.task.runner._run_scenario_once` accepts
-    #     multiple arguments instead of one big tuple with all arguments, we
-    #     need to hardcode unpacking here(all other runners are able to
-    #     transmit arguments in proper way).
-    return runner._run_scenario_once(*args)
 
 
 @runner.configure(name="constant_for_duration")
@@ -279,72 +281,56 @@ class ConstantForDurationScenarioRunner(runner.ScenarioRunner):
         "additionalProperties": False
     }
 
-    @staticmethod
-    def _iter_scenario_args(cls, method, ctx, args, event_queue, aborted):
-        def _scenario_args(i):
-            if aborted.is_set():
-                raise StopIteration()
-            return (cls, method, runner._get_scenario_context(i, ctx), args,
-                    event_queue)
-        return _scenario_args
-
-    def _run_scenario(self, cls, method, context, args):
+    def _run_scenario(self, cls, method_name, context, args):
         """Runs the specified scenario with given arguments.
 
+        This method generates a constant load on the cloud under test by
+        executing each scenario iteration using a pool of processes without
+        pausing between iterations up to the number of times specified
+        in the scenario config.
+
         :param cls: The Scenario class where the scenario is implemented
-        :param method: Name of the method that implements the scenario
+        :param method_name: Name of the method that implements the scenario
         :param context: context that contains users, admin & other
-                        information, that was created before scenario is
+                        information, that was created before scenario
                         execution starts.
         :param args: Arguments to call the scenario method with
 
         :returns: List of results fore each single scenario iteration,
                   where each result is a dictionary
         """
-        timeout = self.config.get("timeout", 600)
+        timeout = self.config.get("timeout", 600) 
+        duration = self.config.get("duration", 0)
         concurrency = self.config.get("concurrency", 1)
-        duration = self.config.get("duration")
+        iteration_gen = utils.RAMInt()
 
-        # FIXME(andreykurilin): unify `_worker_process`, use it here and remove
-        #     usage of `multiprocessing.Pool`(usage of separate process for
-        #     each concurrent iteration is redundant).
-        pool = multiprocessing.Pool(concurrency)
-        manager = multiprocessing.Manager()
-        event_queue = manager.Queue()
-        stop_event_listener = threading.Event()
+        cpu_count = multiprocessing.cpu_count()
+        max_cpu_used = min(cpu_count,
+                           self.config.get("max_cpu_count", cpu_count))
 
-        def event_listener():
-            while not stop_event_listener.isSet():
-                while not event_queue.empty():
-                    self.send_event(**event_queue.get())
-                else:
-                    time.sleep(0.01)
+        processes_to_start = min(max_cpu_used, concurrency)
+        concurrency_per_worker, concurrency_overhead = divmod(
+            concurrency, processes_to_start)
 
-        event_listener_thread = threading.Thread(target=event_listener)
-        event_listener_thread.start()
+        self._log_debug_info(duration=duration, concurrency=concurrency,
+                             timeout=timeout, max_cpu_used=max_cpu_used,
+                             processes_to_start=processes_to_start,
+                             concurrency_per_worker=concurrency_per_worker,
+                             concurrency_overhead=concurrency_overhead)
 
-        run_args = butils.infinite_run_args_generator(
-            self._iter_scenario_args(
-                cls, method, context, args, event_queue, self.aborted))
-        iter_result = pool.imap(_run_scenario_once_with_unpack_args, run_args)
+        result_queue = multiprocessing.Queue()
+        event_queue = multiprocessing.Queue()
 
-        start = time.time()
-        try:
+        def worker_args_gen(concurrency_overhead):
             while True:
-                try:
-                    result = iter_result.next(timeout)
-                except multiprocessing.TimeoutError as e:
-                    result = runner.format_result_on_timeout(e, timeout)
-                except StopIteration:
-                    break
+                yield (result_queue, iteration_gen, timeout,
+                       concurrency_per_worker + (concurrency_overhead and 1),
+                       None, duration, context, cls, method_name, args,
+                       event_queue, self.aborted)
+                if concurrency_overhead:
+                    concurrency_overhead -= 1
 
-                self._send_result(result)
-
-                if time.time() - start > duration:
-                    break
-        finally:
-            stop_event_listener.set()
-            event_listener_thread.join()
-            pool.terminate()
-            pool.join()
-            self._flush_results()
+        process_pool = self._create_process_pool(
+            processes_to_start, _worker_process,
+            worker_args_gen(concurrency_overhead))
+        self._join_processes(process_pool, result_queue, event_queue)
